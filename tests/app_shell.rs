@@ -4,40 +4,14 @@ use std::path::Path;
 
 const SERVICE_WORKER_SOURCE: &str = "web/sw.js";
 
-fn normalize_shell_path(path: &str) -> Result<Option<String>, String> {
+fn normalize_shell_path(path: &str) -> Option<String> {
     if path == "./" || path == "." {
         // The root URL resolves to index.html; require that file to be listed explicitly below.
-        return Ok(None);
+        return None;
     }
 
     let path = path.strip_prefix("./").unwrap_or(path);
-    if path.contains('#') {
-        return Err(format!(
-            "APP_SHELL entry contains a URL fragment instead of a file path: {path}"
-        ));
-    }
-    if path.contains('\\') {
-        return Err(format!(
-            "APP_SHELL entry contains a backslash instead of a URL path separator: {path}"
-        ));
-    }
-    if path.split('/').any(has_percent_encoded_dot_segment) {
-        return Err(format!(
-            "APP_SHELL entry contains a percent-encoded dot segment that aliases a canonical URL path: {path}"
-        ));
-    }
-    if path.starts_with('/') || path.split('/').any(|part| part == ".." || part.is_empty()) {
-        return Err(format!(
-            "APP_SHELL entry is not a relative file path: {path}"
-        ));
-    }
-
-    Ok(Some(path.to_owned()))
-}
-
-fn has_percent_encoded_dot_segment(segment: &str) -> bool {
-    let decoded = segment.to_ascii_lowercase().replace("%2e", ".");
-    decoded == "." || decoded == ".."
+    Some(path.to_owned())
 }
 
 fn app_shell_assets(source: &str) -> Result<BTreeSet<String>, String> {
@@ -90,7 +64,7 @@ fn app_shell_assets(source: &str) -> Result<BTreeSet<String>, String> {
             .and_then(|entry| entry.trim().strip_prefix('"'))
             .and_then(|entry| entry.strip_suffix('"'))
             .ok_or_else(|| format!("unsupported APP_SHELL entry: {entry}"))?;
-        match normalize_shell_path(path)? {
+        match normalize_shell_path(path) {
             Some(path) if !assets.insert(path.clone()) => {
                 return Err(format!("APP_SHELL lists {path} more than once"));
             }
@@ -311,43 +285,26 @@ fn declarations_inside_comments_and_strings_are_rejected() {
 }
 
 #[test]
-fn app_shell_paths_with_url_fragments_are_rejected() {
-    let error =
-        app_shell_assets("const APP_SHELL = [\n  \"./index.html\",\n  \"./extra#icon.png\",\n];")
-            .unwrap_err();
-
-    assert!(error.contains("URL fragment"), "{error}");
-}
-
-#[test]
-fn percent_encoded_dot_segments_are_rejected() {
-    for path in [
-        "./%2e",
-        "./%2E",
-        "./.%2e",
-        "./%2e.",
-        "./%2e%2e",
-        "./%2E%2E",
-        "./icons/%2e/icon-192.png",
-    ] {
-        let service_worker = format!("const APP_SHELL = [\n  \"./index.html\",\n  \"{path}\",\n];");
-        let error = app_shell_assets(&service_worker).unwrap_err();
-        assert!(
-            error.contains("percent-encoded dot segment"),
-            "{path}: {error}"
-        );
-    }
-}
-
-#[test]
-fn raw_backslashes_in_app_shell_entries_are_rejected() {
-    let service_worker = r#"const APP_SHELL = [
+fn app_shell_entries_are_treated_as_plain_strings() {
+    let assets = app_shell_assets(
+        r#"const APP_SHELL = [
   "./index.html",
-  "./icons\icon-192.png",
-];"#;
+  "./extra#icon.png",
+  "./icons/%2e/icon-192.png",
+  "./icons\icon-512.png",
+];"#,
+    )
+    .unwrap();
 
-    let error = app_shell_assets(service_worker).unwrap_err();
-    assert!(error.contains("contains a backslash"), "{error}");
+    assert_eq!(
+        assets,
+        BTreeSet::from([
+            "extra#icon.png".to_owned(),
+            "icons/%2e/icon-192.png".to_owned(),
+            "icons\\icon-512.png".to_owned(),
+            "index.html".to_owned(),
+        ])
+    );
 }
 
 #[test]
